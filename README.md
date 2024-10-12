@@ -1,449 +1,526 @@
-# Assignment 4: NanoGPT149
+# 作业 4：NanoGPT149
 
-**Due Monday Dec 4, 11:59pm PST**
+**截止日期：12月4日11:59pm PST**
 
-**100 points total + 12 Points EC**
+**总分100分 + 额外12分**
 
-## Overview 
+## 概览
 
-In this assignment, you will implement and optimize the key components of a transformer-based deep neural network that synthesizes Shakespeare text. While the DNN you will work with is a fairly small model, the basic components of the model are the same as those featured in large-language models (LLMs) that form the basis of technologies like ChatGPT today. Specifically, you will implement the attention layer of this model in C++, focusing on optimizations that improve arithmetic intensity, reduce memory footprint, and utilize multi-core and potentially SIMD parallelism on the CPU. Your implementation will then be used as part of a complete [NanoGPT](https://github.com/karpathy/nanoGPT) model that you can run to produce novel Shakespeare-like text.
+在本作业中，你将实现并优化一个基于 transformer 的深度神经网络的关键组件，该网络能合成莎士比亚文本。虽然你将处理的 DNN 模型相对较小，但模型的基本组件与构成如今 ChatGPT 等技术基础的大型语言模型（LLM）中的组件相同。具体来说，你将用 C++ 实现此模型的注意力层，并专注于提高算术强度、减少内存占用，并利用 CPU 上的多核及可能的 SIMD 并行性的优化。你的实现将作为完整的[NanoGPT](https://github.com/karpathy/nanoGPT)模型的一部分，用来生成新颖的类似莎士比亚的文本。
 
-Overall, this assignment will:
+总的来说，这项作业将：
 
- * Give you experience with the low-level details of implementing DNN layers. In other words, the "guts" of vendor libraries like NVIDIA's CuDNN or Intel's One API.
-   
- * Show the value of key locality-perserving optimizations like loop blocking and loop fusion.
+- 让你体验实现 DNN 层的底层细节，换句话说，就是像 NVIDIA 的 CuDNN 或 Intel 的 One API 等供应商库的“内部”。
 
-## Environment Setup
+- 展示保持关键局部性的优化（如循环嵌套优化和循环合并）的价值。
 
-We will provide you with SSH access to a cluster of shared machines for testing your code for this assignment. (We are not using AWS Lightsail like we did in Programming Assignment 3). You will directly log into these machines via ssh. Details on how to access the cluster will be provided in an Ed post.
+## 环境设置
 
-To get started, clone the repo from github:
+我们将为你提供 SSH 访问权限，以便在共享机器集群上测试你的代码。（我们不再使用像在编程作业 3 中的 AWS Lightsail）。你将直接通过 ssh 登录这些机器。如何访问集群的详细信息将在 Ed 帖子中提供。
 
-    git clone https://github.com/stanford-cs149/cs149gpt.git
+首先，从 github 克隆仓库：
 
-Run the command below to run inference using a model trained by the CS149 staff. You will see some randomly generated Shakespeare text.
+```
+git clone https://github.com/stanford-cs149/cs149gpt.git
+```
 
-     python3 gpt149.py part0 --inference -m shakes128
+运行以下命令以使用由 CS149 工作人员训练的模型进行推理。你将看到一些随机生成的莎士比亚文本。
 
-Note that the first time you run the program, it will perform a compilation step that may take a few seconds, you'll see the text `Compiling code into a PyTorch module...`. <br><br>
-After this is complete, you'll see some text that begins something like this:
+```
+python3 gpt149.py part0 --inference -m shakes128
+```
 
-    Running inference using dnn model shakes128
-    number of parameters: 0.80M
-    Loading meta from data/shakespeare_char/meta.pkl...
+注意，你第一次运行程序时，将进行编译步骤，可能需要几秒钟，你会看到`Compiling code into a PyTorch module...`的文字。
 
-    BOTtaps along my lord.
+完成后，你将看到类似这样的文本：
 
-    DUKE OF AUMERLE:
-    The this is needs! Camillo, put I will make be strong.
+```
+Running inference using dnn model shakes128
+number of parameters: 0.80M
+Loading meta from data/shakespeare_char/meta.pkl...
 
-    QUEEN MARGARET:
-    My lord, yet t
-    -------------------------------------------------------------
-    CAMILLO:
-    The shadows men sweet thy will burn comes.
-    
-    FLORIZEL:
-    But of appear, good from thy heart
-    As I be come of repeal of a w
-    -------------------------------------------------------------
+BOTtaps along my lord.
 
-Sure, NanoGPT's output may not be literary excellence, but it is still pretty neat! What you see on screen is the output of the standard PyTorch implementation of NanoGPT. Feel free to change to larger sequence lengths by changing the `-m` parameter to larger models like `shakes256`, `shakes1024`, or `shakes2048`. You'll see the performance of NanoGPT token generation slow considerably with the bigger models.
+DUKE OF AUMERLE:
+The this is needs! Camillo, put I will make be strong.
+
+QUEEN MARGARET:
+My lord, yet t
+-------------------------------------------------------------
+CAMILLO:
+The shadows men sweet thy will burn comes.
+
+FLORIZEL:
+But of appear, good from thy heart
+As I be come of repeal of a w
+-------------------------------------------------------------
+```
+
+当然，NanoGPT 的输出可能不是文学上的杰作，但它仍然相当精彩！你在屏幕上看到的是 NanoGPT 的标准 PyTorch 实现的输出。如果你想看到更长序列的表现，可以通过改变`-m`参数到更大的模型，如`shakes256`、`shakes1024`或`shakes2048`。你会发现，随着模型变大，NanoGPT 生成 token 的性能明显变慢。
 
 ### My Compilation Hangs
-Some students have experienced issues when their compilation randomly starts hanging even though it was working before. When Python JIT compiles your code, it uses locks so multiple threads can compile it as once for efficiency. If you ever compiler your code and it hangs it means that for some reason Python thinks that the lock to your file is held. In order to fix this you can run:
 
-     rm ~/.cache/torch_extensions/py310_cpu/custom_module/lock
+有些学生遇到过问题：即使之前可以正常工作，但他们的编译却随机开始挂起。当 Python JIT 编译你的代码时，它使用锁来允许多个线程同时编译，以提高效率。如果你在编译代码时遇到挂起，这意味着由于某种原因，Python 认为你的文件锁被占用了。为了解决这个问题，你可以运行：
 
-## An Attention Module
+```
+rm ~/.cache/torch_extensions/py310_cpu/custom_module/lock
+```
 
-The NanoGPT module you are executing in this assignment is a sequence-to-sequence model. The input is a sequence of words, such as the phrase *"The course of true love never did run smooth"*.  And the output of the model is a new sequence of words that is likely to follow the input, as determined by a model that have been trained on a large corpus of Shakespeare text. For example, given the prefix above, the output of the model might be *"whispered cs149 students whilst coding on assignments"*.  
+## 注意力模块
 
-The NanoGPT model uses a popular DNN module called a *transformer*, and a key component of a transformer module is a block called the *attention mechanism*. In this assignment your job is to implement the attention mechanism.  You will begin with a simple sequential implementation of attention, and then over the course of the assignment we'll take you through the process of adding optimizations like loop blocking, loop fusion, and basic parallelization.
+你在本次作业中执行的 NanoGPT 模块是一个 sequence-to-sequence 模型。输入是一系列单词，比如短语 *"The course of true love never did run smooth"*。模型的输出是可能在输入之后的新单词序列，这是由在大量莎士比亚文本上训练的模型决定的。例如，给定上述前缀，模型的输出可能是 *"whispered cs149 students whilst coding on assignments"*。
 
-In this section, we will describe the math of the attention mechanism (that you are supposed to compute). You may refer to [Slide 52 of Lecture 10](https://gfxcourses.stanford.edu/cs149/fall23/lecture/dnneval/slide_52) for a visual representation to follow along with. To students that seek more intuition for *why* an attention mechanism is what it is, we refer you to the many online tutorials about this popular DNN architecture such as:
+NanoGPT 模型使用了一种受欢迎的 DNN 模块，称为 *transformer*，而 transformer 模块的关键组件是称为 *注意力机制* 的块。在这次作业中，你的任务是实现注意力机制。你将从注意力的简单串行实现开始，然后在作业过程中，我们将引导你完成循环嵌套优化、循环合并和基本并行化等优化。
 
-  * [What is the intuition behind the attention mechanism?](https://ai.stackexchange.com/questions/21389/what-is-the-intuition-behind-the-attention-mechanism)
-  * [Transformer Neural Networks: A Step-by-Step Breakdown](https://builtin.com/artificial-intelligence/transformer-neural-network)
-  * [How Transformers Work](https://towardsdatascience.com/transformers-141e32e69591)
+在本节中，我们将描述注意力机制的数学原理（你应该计算的）。你可以参考[第10讲第52张幻灯片](https://gfxcourses.stanford.edu/cs149/fall23/lecture/dnneval/slide_52)获得可视化演示以便跟进。对于想要更直观地了解注意力机制为何如此的学生，我们推荐你查看关于这一流行 DNN 架构的许多在线教程，例如：
 
-The attention mechanism takes as input three matrices `Q`, `K`, and `V`, referred to as "query", "key", and "value" vectors.  Each of these matrices are `Nxd` in size. `N` is the number of tokens (words) in the input sequence, so each row in these matrices is a length-`d` vector containing an embedding (a neural code) for one of the input words.  In other words `Q`, `K`, and `V` all contain different `d`-dimensional embeddings of the input tokens.
+- [What is the intuition behind the attention mechanism?](https://ai.stackexchange.com/questions/21389/what-is-the-intuition-behind-the-attention-mechanism)
+- [Transformer Neural Networks: A Step-by-Step Breakdown](https://builtin.com/artificial-intelligence/transformer-neural-network)
+- [How Transformers Work](https://towardsdatascience.com/transformers-141e32e69591)
 
-**Important Caveat:** To increase the efficiency and expressive power of the model, this attention module is typically run multiple times in parallel, due to there being multiple attention heads and multiple inputs in a batch. Understanding exactly why this is the case is not important, but just know that, in your implementation, these matrices will appear as **4D** tensors, where you will just be concerned with two of the four dimensions (corresponding to the $N\times d$ size.)
+注意力机制需要输入三个矩阵 `Q`、`K` 和 `V`，分别称为“query”、“key”和“value”向量。这些矩阵的大小都是 `Nxd`。`N` 是输入序列中的 token（word）数，所以这些矩阵中的每一行都是一个长度为 `d` 的向量，包含一个输入词的嵌入（embedding，神经编码）。换句话说，`Q`、`K` 和 `V`都包含了输入标记的不同 `d` 维嵌入。
 
-The first step of an attention module is to compute all pairs of interactions between the words.  This is done by multiplying the query matrix $Q$ against the key matrix $K$ to compute:
+**重要注意事项：** 因为一个 batch 中存在多个注意力头和多个输入，为了提高模型的效率和表达能力，这个注意力模块通常会并行运行多次。确切地理解为什么会出现这种情况不重要，但是要知道，在你的实现中，这些矩阵将显示为 **4 维** 张量，你将只关心四个维度中的两个（对应于 $N\times d$ 的大小）。
+
+注意力模块的第一步是计算单词之间的所有交互对。这是通过将查询矩阵 $Q$ 与键矩阵 $K$ 相乘来计算的：
 
 $$S = QK^T.$$
 
-The next computation is a [softmax operation](https://machinelearningmastery.com/softmax-activation-function-with-python/) performed per-row of $S$.  The softmax produces normalized probabilities per row. 
+接下来的计算是对 $S$ 的每一行执行的 [softmax 操作](https://machinelearningmastery.com/softmax-activation-function-with-python/)。softmax 生成每行的归一化概率。
 
-For each row of the matrix, the softmax operation performs the following computation. Note that we give you the math for computing a softmax on a 1D vector $X$.  You'll need to perform this math for each row of the matrix $S$ above.
+对于矩阵的每一行，softmax 操作执行以下计算。请注意，我们为你提供了在一维向量 $X$ 上计算 softmax 的数学公式。你需要对上面的矩阵 $S$ 的每一行执行此数学计算。
 
 $$\text{softmax}(x) = \frac{\mathbf f(x)}{l(x)}$$
 
-where
+其中
 
 $$\mathbf f(x) = \begin{bmatrix}e^{x_1} & e^{x_2} &\cdots & e^{x_N} \end{bmatrix}\qquad \text{and} \qquad l(x) = \sum_{i=1}^N f(x)_i.$$
 
-Note that the math above differs from the equation you saw in lecture in that `max(x)` is not subtracted from the numerators. The version of the math in lecture is what's used in practice for numerical stability, but in this assignment you can just use the math above. (It's a lot easier to implement FlashAttention later in the assignment if you use the math above.) For the ambitious, if you wish to use the version from lecture, feel free... you may see differences in "correctness checking".)
+请注意，上述数学公式与你在讲座中看到的方程不同，因为没有从分子中减去`max(x)`。讲座中使用的版本在实践中是实践中用于数值稳定性的版本，但在这次作业中你可以使用上述数学公式。（如果使用上述数学公式，实现 FlashAttention 会容易得多。对于有抱负的人，如果你希望使用讲座中的版本，也可以……你可能会在“正确性检查”中看到差异。）
 
-This yields a matrix of attention weights $P$, where
+这将生成一个注意力权重矩阵 $P$，其中
 
 $$P = \texttt{softmax}(\texttt{each row of }S).$$
 
-Finally, the attention weights are used to aggregate a set of learned **value** vectors, which are provided as a matrix $V$ of shape $N \times d$, to produce a final output $O$:
+最后，注意力权重用于聚合一组学习到的**值**向量，这些向量作为矩阵 $V$ 提供，形状为 $N \times d$，以产生最终输出 $O$：
 
 $$O = PV.$$
 
-In summary, the attention layer consists of an expensive matrix multiply, followed by a softmax layer, followed by one more matrix multiply. These three components will be the bulk of your implementation -- read on for the details!
+总之，注意力层由一个昂贵的矩阵乘法组成，后面跟着一个 softmax 层，然后是另一个矩阵乘法。这三个组成部分将是你实现的主体——继续阅读以获取详细信息！
 
-## Warm-Up: Accessing Tensors (3 Points)
-Tensors are a data abstraction used in Pytorch. Although the name seems a bit intimidating, they are nothing more than multi-dimensional arrays. By abstracting these multi-dimensional arrays into a tensor datatype, the average PyTorch programmer no longer has to worry about how internals such as accessing a value or matrix multiplication work. Furthermore, Pytorch's tensors allow for easy GPU portability so that they can be run on specialized hardware, like Tensor cores. However, for this assignment we will be using CPU only, and instead of working with tensor datatypes we want you to work with a datatype you are all familiar with: C++ vectors.
+## 热身：访问张量（3分）
 
-A central key to understanding tensors is to know how to access them. This is why for the warm-up we want you to write accessors for a 4D tensor. For Parts 1-4, we have taken the liberty of providing you with a function called  `formatTensor` that transforms Tensors into C++ vectors. This provides you with a contiguous memory layout for a tensor's values, similar to how Pytorch stores tensor data. For Parts 1-4, we have also taken the liberty of transforming the output vector back into a tensor for you.
+张量是 Pytorch 中使用的一种数据抽象。尽管这个名字听起来有点吓人，但它们不过是多维数组。通过将这些多维数组抽象成张量数据类型，普通的 PyTorch 程序员不再需要担心访问值或矩阵乘法等内部机制是如何工作的。此外，Pytorch 的张量允许轻松地在 GPU 上移植，因此它们可以在专门的硬件上运行，比如 Tensor 核心。然而，对于这个作业，我们将仅使用 CPU，并且我们希望你使用大家都熟悉的数据类型：C++ vector。
 
-### Step 1: Understand a 2D Accessor
-You should be relatively familiar with how to flatten a 2D array after Assignment 3. Your first job will be to understand how we can access an element of a multidimensional array, which is really just stored as a flattened 1D buffer in memory. We have given you example accessors for reading and writing to a 2D array. You will find them at the top of `module.cpp` under the names `twoDimRead` and `twoDimWrite.` The given 2D accessors will show you how we can access an arbitrary element `(i, j)` within this flattened array. **Note that the formula is as follows: For any given element (i, j) within an array, you may access it using [i * number_of_columns + j].**
+理解张量的关键是知道如何访问它们。这就是为什么我们希望你为一个 4 维张量编写访问器作为热身。对于第 1-4 部分，我们已经为你提供了一个名为`formatTensor`的函数，该函数将张量转换为 C++ vector。这为你提供了一个张量值的连续内存布局，类似于 Pytorch 存储张量数据的方式。对于第 1-4 部分，我们还会将输出 vector 转换回张量。
 
-### Step 2: Implement a 4D Accessor
-In our LLM model, our arrays are 4D, so we will actually need a 4D accessor to access its elements! Now, extend the concepts behind accessing a 2D tensor so that you can access a 4D tensor. Your job for Step 1 is to implement the functions `fourDimRead` and `fourDimWrite` in the file `module.cpp`.
+### 步骤1：理解二维访问器
 
-### Testing:
-Run the following command to test your 4D accessor:
+在完成作业 3 后，你应该相对熟悉如何展平一个二维数组了。你的第一个任务是理解如何访问多维数组的元素，多维数组在内存中实际上只是作为一个展平的一维缓冲区存储的。我们为你提供了用于读写二维数组的示例访问器。你可以在`module.cpp`的顶部找到它们，名字叫做`twoDimRead`和`twoDimWrite`。给定的二维访问器将向你展示我们如何访问这个展平数组中的任意元素`(i, j)`。**注意，公式如下：对于数组内的任何给定元素 (i, j)，你可以使用 [i * 列数 + j] 来访问它。**
 
-    python3 gpt149.py 4Daccess
+### 步骤2：实现一个四维访问器
 
-When running the test, if you have implemented your accessors correctly, the expected and result values should be the same, resulting in an output like the one below. 
+在我们的 LLM 模型中，我们的数组是四维的，所以我们实际上需要一个四维访问器来访问它的元素！现在，扩展访问二维张量的概念，以便你可以访问四维张量。步骤 2 的任务是在文件`module.cpp`中实现函数`fourDimRead`和`fourDimWrite`。
 
-    Expected: 0.0006
-    Result: 0.0006
+### 测试：
 
-### What to submit
+运行以下命令来测试你的四维访问器：
 
-* Implement `fourDimRead` and `fourDimWrite` in the file `module.cpp`.
+```
+python3 gpt149.py 4Daccess
+```
 
-* Next, answer the following question in your writeup:
-  * Briefly describe how a 4D tensor/array is laid out in memory. Why do you think this convention was chosen and how does it leverage hardware?
+在运行测试时，如果你正确实现了你的访问器，预期值和结果值应该是相同的，将产生如下输出。
 
-## Part 1: A Simple (But Not So Efficient) Implementation of Attention (10 Points)
+```
+Expected: 0.0006
+Result: 0.0006
+```
 
-Now that you have your accessors, it's time to start working on your custom attention layer. As the first step in this assignment, you will be implementing a serial attention layer in C++ with no optimizations. In `myNaiveAttention`, we have provided you with two examples. The first demonstrates how to fill a 4D tensor with 0's and the second demonstrates how to fill a 2D tensor with 0's. Extend these concepts such that you are able to implement attention. You should:
+### 提交内容
 
-    1) For each Batch:
-    2) For each Head:
-        a) Loop through Q and K and multiply Q with K^t, storing the result in QK^t. 
-        QK^t is preallocated for you, and passed as an arg to myNaiveAttention. 
-        (You should not have to allocate any pytorch tensors for any part of this assignment)
-        
-        Note that after indexing the batch and head, you will be left with 2D matrices 
-        of shape (N, d) for Q and K. Also note that the dimensions of K are (N, d) and 
-        the dimensions of the K^t that you want are (d, N). Rather than transposing K^t, how
-        can you multiply Q and K in such an order that the result is QK^t? Think about how
-        you can reorder your `for` loops from traditional matrix multiplication.
-   
-        b) After you have achieved QK^t -- which should have shape (N, N) -- you should loop 
-        through each row. For each row, you should get the exponential of each row element,
-        which you can get using the C++ inbuilt `exp` function. Now, divide each of these 
-        resulting exponentials by the sum of all exponentials in its row and then store it back into QK^t. 
-   
-        c) Finally, you should matrix multiply QK^t with V and store the result into O. 
-        Notice, much like Q and K, after you index the batch and head V and O will
-        be of shape (N, d). Therefore, after you multiply QK^t (N, N) with V (N, d),
-        you can simply store the resulting shape (N, d) back into O.
+- 在文件`module.cpp`中实现`fourDimRead`和`fourDimWrite`。
 
-### Testing
-Run the following test to check your program's correctness:
+- 接下来，在你的报告中回答以下问题：
+	- 简要描述四维张量/数组在内存中的布局方式。你认为为什么选择这种约定，它是如何利用硬件的？
 
-    python3 gpt149.py part1
+## 第 1 部分：简单（但不太高效）的注意力机制实现（10分）
 
-While running the test, we show results of the pytorch profiler - this information is presented in a table which will show you detailed statistics on all function calls called in the test. The table that is dumped will look like the following:
+现在你已经拥有了访问器，是时候开始着手实现你的自定义注意力层了。作为这个作业的第一步，你将在 C++ 中实现一个无优化的串行注意力层。在 `myNaiveAttention` 中，我们为你提供了两个示例。第一个示例展示了如何将一个四维张量填充为 0，第二个示例展示了如何将一个二维张量填充为 0。扩展这些概念，使你能够实现注意力机制。你应该：
 
-    -----------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
-                         Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg       CPU Mem  Self CPU Mem    # of Calls  
-    -----------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
-                  aten::empty         0.01%      23.000us         0.01%      23.000us       3.286us       5.00 Mb       5.00 Mb             7  
-                  aten::zeros         0.14%     321.000us         0.18%     408.000us     102.000us       4.50 Mb           4 b             4  
-    STUDENT - NAIVE ATTENTION        99.56%     229.600ms        99.97%     230.538ms     230.538ms       4.50 Mb      -1.00 Mb             1  
-                  aten::clone         0.02%      37.000us         0.10%     231.000us     115.500us       1.00 Mb           0 b             2  
-                aten::flatten         0.02%      48.000us         0.07%     153.000us      30.600us     512.00 Kb           0 b             5  
-             aten::empty_like         0.00%       3.000us         0.00%       8.000us       8.000us     512.00 Kb           0 b             1  
-          aten::empty_strided         0.01%      16.000us         0.01%      16.000us      16.000us     512.00 Kb     512.00 Kb             1  
-              model_inference         0.02%      38.000us        99.98%     230.578ms     230.578ms     512.00 Kb      -4.00 Mb             1  
-                  aten::zero_         0.02%      42.000us         0.15%     354.000us      88.500us           0 b           0 b             4  
-                  aten::fill_         0.14%     312.000us         0.14%     312.000us     156.000us           0 b           0 b             2  
-    -----------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
-
-After the table is dumped, we also display two relevant statistics, cpu time (in milliseconds) and mem usage (in bytes). If you implemented your function correctly you should see those two values output like so:
-
-    REFERENCE - NAIVE ATTENTION statistics
-    cpu time:  230.724ms
-    mem usage:  4718588 bytes
+```
+1) 对每个Batch:
+2) 对每个Head:
+    a) 遍历Q和K并将Q与K^t相乘，将结果存储在QK^t中 
+    QK^t已为你预先分配，并作为参数传递给myNaiveAttention。
+    （你不应该为这个作业的任何部分分配任何pytorch张量）
     
-    STUDENT - NAIVE ATTENTION statistics
-    cpu time:  232.561ms
-    mem usage:  4718588 bytes
+    注意，在索引Batch和Head后，你将得到Q和K的二维矩阵，形状为 (N, d)。同时注意K的维度为 (N, d)，而你想要的K^t的维度为 (d, N)。不转置K^t，如何直接通过改变相乘的顺序来得到QK^t呢？思考如何重新排序你的`for`循环以脱离传统的矩阵乘法。
+   
+    b) 在得到QK^t后——形状应该是(N, N) ——你应该遍历每一行。对于每一行，你应该获取每个元素的幂，可以使用 C++ 内建的`exp`函数。现在，将这些结果的幂除以其行中所有幂的总和，然后将它存回QK^t。
+   
+    c) 最后，你应该将QK^t与V进行矩阵乘法，并将结果存储在O中。
+    注意，与Q和K类似，当你索引Batch和Head后，V和O的形状将为 (N, d)。因此，在你将QK^t (N, N) 与V (N, d) 相乘后，你可以直接将所得形状 (N, d) 存储回O。
+```
 
-If your attention is not producing the correct output, you will see the following message:
+### 测试
 
-    YOUR ATTENTION PRODUCED INCORRECT RESULTS
-    
-Note that you do not have to exactly match the reference `cpu time,` as long as you still produce a correct result. You should still be relatively close to the cpu time. We will provide you with a buffer of 15ms with respect to the reference cpu time. So, if you are <= 15ms behind the reference solution then that is fine and you will still get full credit. You are of course encouraged to beat the reference cpu time, and faster speeds will not be penalized.
+运行以下测试以检查你的程序的正确性：
 
-Note that the memory usage value will not change even if you allocate more intermediate variables then we give you. This memory usage is only profiled from the variables passed in as arguments. For each Parts (1-4), we provide you with the minimum amount of variables to produce the correct result. **You can also assume that all the temporary intermediate tensors that we have passed in are initialized to contain zeros.** We do this because we want you to see how the memory usage goes down as operations get fused and there will be writeup questions based on these memory values. Adding any more high memory data structures will most likely only hurt your performance, but you are welcome to try adding additional variables in your `module.cpp` file and you will not be penalized.
+```
+python3 gpt149.py part1
+```
 
-You should be sure to test that your function works for different values of N, as this is how we will be grading you on correctness. We have provided a command line argument that works as so:
+在运行测试时，我们会展示 pytorch profiler 的结果——这些信息会以表格形式呈现，显示测试中所有函数调用的详细统计数据。导出的表格将如下所示：
 
-    python3 gpt149.py part1 -N <val>
+```
+-----------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                     Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg       CPU Mem  Self CPU Mem    # of Calls  
+-----------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+              aten::empty         0.01%      23.000us         0.01%      23.000us       3.286us       5.00 Mb       5.00 Mb             7  
+              aten::zeros         0.14%     321.000us         0.18%     408.000us     102.000us       4.50 Mb           4 b             4  
+STUDENT - NAIVE ATTENTION        99.56%     229.600ms        99.97%     230.538ms     230.538ms       4.50 Mb      -1.00 Mb             1  
+              aten::clone         0.02%      37.000us         0.10%     231.000us     115.500us       1.00 Mb           0 b             2  
+            aten::flatten         0.02%      48.000us         0.07%     153.000us      30.600us     512.00 Kb           0 b             5  
+         aten::empty_like         0.00%       3.000us         0.00%       8.000us       8.000us     512.00 Kb           0 b             1  
+      aten::empty_strided         0.01%      16.000us         0.01%      16.000us      16.000us     512.00 Kb     512.00 Kb             1  
+          model_inference         0.02%      38.000us        99.98%     230.578ms     230.578ms     512.00 Kb      -4.00 Mb             1  
+              aten::zero_         0.02%      42.000us         0.15%     354.000us      88.500us           0 b           0 b             4  
+              aten::fill_         0.14%     312.000us         0.14%     312.000us     156.000us           0 b           0 b             2  
+-----------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+```
 
-If you have implemented your attention layer, you can also see the DNN use your attention layer to generate text, optionally changing the model to `shakes256`, `shakes1024`, or `shakes2048` if you wish to output more text:
+在表格导出后，我们还会显示两个相关的统计数据：CPU时间（以毫秒为单位）和内存使用量（以字节为单位）。如果你正确实现了你的函数，你应该会看到如下输出：
 
-    python3 gpt149.py part1 --inference -m shakes128
+```
+REFERENCE - NAIVE ATTENTION statistics
+cpu time:  230.724ms
+mem usage:  4718588 bytes
 
-Note that you will not be autograded on inference, and this is purely for fun. Please also note that the models `shakes1024` and `shakes2048` will not work with the softmax we describe in this writeup due to overflow errors. If you wish to have them work, you must implement the "safe" softmax described in class. This is completely optional as we will always make sure to give you nice values when grading. Parts 1-3 all follow the same grading procedure listed here in this section.
+STUDENT - NAIVE ATTENTION statistics
+cpu time:  232.561ms
+mem usage:  4718588 bytes
+```
 
-### What to submit
+如果你的注意力机制没有产生正确的输出，你将看到以下消息：
 
-* Implement `myNaiveAttention` in `module.cpp`.
+```
+YOUR ATTENTION PRODUCED INCORRECT RESULTS
+```
 
-## Part 2: Blocked Matrix Multiply and Unfused Softmax (20 Points)
-Now that we have our baseline matrix multiply, let's see how we can optimize it. Currently, our matrix multiply behaves as follows:
+注意，你不需要完全匹配参考的 `cpu time`，只要你仍然产生正确的结果。你应该尽量接近 CPU 时间。我们将为你提供 15 毫秒的缓冲时间。如果你的时间比参考解法慢 <= 15ms，那就可以了，你仍然会得到满分。当然，我们鼓励你超过参考的 CPU 时间，速度更快不会受到惩罚。
+
+注意，即使你分配的中间变量比我们给你的更多的，内存使用值也不会改变。此内存使用量仅根据作为参数传递的变量进行分析。对于每个部分（1-4），我们为你提供了产生正确结果的最少变量。**你还可以假设我们传递的所有临时中间张量都被初始化为包含零。**我们这样做是因为我们希望你看到操作合并后的内存使用量下降，并且会有基于这些内存值的写作问题。添加任何更多的高内存数据结构可能只会损害你的性能，但你可以尝试在`module.cpp`文件中添加额外的变量，你不会因此受到惩罚。
+
+你应该确保你的函数在不同的 N 值下工作正常，因为这将是我们评估你正确性的方式。我们提供了一个命令行参数：
+
+```
+python3 gpt149.py part1 -N <val>
+```
+
+如果你已经实现了你的注意力层，你还可以看到 DNN 使用你的注意力层生成文本，如果你希望输出更多文本，可以选择将模型更改为`shakes256`、`shakes1024`或`shakes2048`：
+
+```
+python3 gpt149.py part1 --inference -m shakes128
+```
+
+请注意，在推理过程中不会自动评分，这纯粹是为了好玩。请注意，由于溢出错误，模型`shakes1024`和`shakes2048`将无法与我们在本文中描述的 softmax 一起使用。如果你希望它们正常工作，你必须实现课堂上描述的“安全” softmax。这完全是可选的，因为我们在评分时总是确保给你合理的值。第 1-3 部分都遵循本节中列出的相同评分程序。
+
+### 提交内容
+
+- 在`module.cpp`中实现`myNaiveAttention`。
+
+## 第 2 部分：块矩阵乘法和 Unfused Softmax（20分）
+
+现在我们已经有了基线的矩阵乘法，让我们看看如何优化它。目前，我们的矩阵乘法行为如下：
 
 <p align="center">
-  <img src="https://github.com/stanford-cs149/cs149gpt/blob/main/assets/current_matmul.png" width=40% height=40%>
+  <img src="./assets/current_matmul.png" width=40% height=40%>
 </p>
 
-Notice how poor the cache behavior of this operation is. For each element of C, we load in multiple cache lines from both A and B. However, something to keep in mind is that the size of these matrices are much bigger than our cache size. Therefore, by the time we want to process our next element of C, we will be reloading cache lines that have been evicted. But what if we reused these cache lines? The main reason that our code is inefficient is because we are processing a single element of C at a time, but what if we processed BLOCK elements at a time? In particular, what if we processed a cache line size of elements? 
+请注意这个操作的缓存表现有多差。对于 C 的每个元素，我们都从 A 和 B 中加载了多个缓存行。然而，需要注意的是，这些矩阵的大小远大于我们的缓存大小。因此，当我们想处理 C 的下一个元素时，我们将重新加载已经被驱逐的缓存行。但是，如果我们重用这些缓存行呢？我们的代码效率低下的主要原因是我们一次处理一个C的元素，但如果我们一次处理一块元素呢？特别是，如果我们处理一个缓存行大小的元素呢？
 
-Your job is to further extend your matrix multiply so that it employs blocking as discussed in [lecture](https://gfxcourses.stanford.edu/cs149/fall23/lecture/perfopt2/slide_43). You will decompose the large matrices into smaller cache-sized submatrices. Your multiply will then process the smaller submatrices before evicting them from the cache. The behavior should look like the following:
+你的任务是进一步扩展你的矩阵乘法，使其采用在[讲座](https://gfxcourses.stanford.edu/cs149/fall23/lecture/perfopt2/slide_43)中讨论的分块技术。把大矩阵分解成较小的缓存大小的子矩阵。然后你的乘法将在从缓存中驱逐它们之前处理。其行为应如下图所示：
 
 <p align="center">
-  <img src="https://github.com/stanford-cs149/cs149gpt/blob/main/assets/blocked_matmul.png" width=40% height=40%>
+  <img src="./assets/blocked_matmul.png" width=40% height=40%>
 </p>
 
-As a further example, let's say I have 3 NxN matrices and a cache line size of L. I would then break my 3 NxN matrices into (N/L)x(N/L) submatrices. How does this improve my cache utilization?
+再举一个例子，假设我有 3 个 NxN 矩阵和一个大小为 L 的缓存行。然后我会将我的 3 个 NxN 矩阵分解成 (N/L)x(N/L) 子矩阵。这是怎样改进缓存利用的？
 
-However, something to keep in mind is that we do not have perfectly square matrices. Our $Q$ and $K^{T}$ matrices are Nxd and dxN respectively. Keep this in mind as you try to break your matrices into blocks. Furthermore, your tile size will not always divide up N evenly, meaning you will have some "remainder" tiles that are not full of data. In this case, you do not want to iterate over the entire "remainder" tile, but only iterate over a "subtile", which has dimension `min(tile_size, N-tileIndex*tileSize)`.
+然而，需要牢记的是，我们的矩阵并不是完全的方阵。我们的 $Q$ 和 $K^{T}$ 矩阵的形状分别是 Nxd 和 dxN。在你尝试将矩阵分解成块时，请记住这一点。此外，你的块大小并不总是能均匀地整除 N，这意味着你将有一些“剩余”块没有充满数据。在这种情况下，你不想遍历整个“剩余”块，而只想遍历一个“子块”，其维度为`min(tile_size, N-tileIndex*tileSize)`。
 
-Also, keep in mind that as before, the temporary memory you will need is already preallocated for you and passed to the function you need to implement (`myUnfusedAttentionBlocked`) - you shouldn't have to allocate anything yourself although you will not be penalized for doing so.
+还请记住，如前所述，需要的临时内存已预先分配，并传递给你需要实现的函数（`myUnfusedAttentionBlocked`）——你不需要自己分配任何东西，尽管这样做不会受到惩罚。
 
-**Note that you have two opportunities for blocked matrix multiplication here: QK^t and PV. You should utilize blocked matrix multiply on both in order to achieve the reference speedup.**
+**请注意，你在这里有两次机会进行块矩阵乘法：QK^t 和 PV。你应该对两者都使用块矩阵乘法，以实现参考的加速效果。**
 
-### Testing:
-Run the following test to check your program's correctness:
+### 测试：
 
-    python3 gpt149.py part2
+运行以下测试以检查你的程序的正确性：
 
-A correct implementation should yield the following output:
+```
+python3 gpt149.py part2
+```
 
-    REFERENCE - BLOCKED MATMUL + UNFUSED SOFTMAX statistics
-    cpu time:  156.271ms
-    mem usage:  4718588 bytes
+正确的实现应产生以下输出：
 
-    STUDENT - BLOCKED MATMUL + UNFUSED SOFTMAX statistics
-    cpu time:  160.891ms
-    mem usage:  4718588 bytes
+```
+REFERENCE - BLOCKED MATMUL + UNFUSED SOFTMAX statistics
+cpu time:  156.271ms
+mem usage:  4718588 bytes
 
-An incorrect implementation will have the output:
+STUDENT - BLOCKED MATMUL + UNFUSED SOFTMAX statistics
+cpu time:  160.891ms
+mem usage:  4718588 bytes
+```
 
-    YOUR ATTENTION PRODUCED INCORRECT RESULTS
+不正确的实现将产生以下输出：
 
-Just as in Part 1, we will autograde the correctness of your function's output and its CPU time. You have the same buffer of <=15ms of the reference solution. If your program is faster you will not be penalized.
+```
+YOUR ATTENTION PRODUCED INCORRECT RESULTS
+```
 
-You should be sure to test that your function works for different values of N, as this is how we will be grading you on correctness. We have provided a command line argument that works as so:
+和第 1 部分一样，我们将自动评估函数输出的正确性及其 CPU 时间。你同样有与参考解法相比的 <=15ms 缓冲时间。如果你的程序更快，你不会受到惩罚。
 
-    python3 gpt149.py part2 -N <val>
+你应该确保你的函数在不同的 N 值下工作正常，因为这将是我们评估你正确性的方式。我们提供了一个命令行参数：
 
-You can see the DNN use your attention layer to generate text, optionally changing the model to `shakes256`, `shakes1024`, or `shakes2048` if you wish to output more text:
+```
+python3 gpt149.py part2 -N <val>
+```
 
-    python3 gpt149.py part2 --inference -m shakes128
+你可以看到 DNN 使用你的注意力层生成文本，如果你希望输出更多文本，可以选择将模型更改为`shakes256`、`shakes1024`或`shakes2048`：
 
-Note that you will not be autograded on inference, and this is purely for fun. Please also note that the models `shakes1024` and `shakes2048` will not work with the softmax we describe in this writeup due to overflow errors. If you wish to have them work, you must implement the "safe" softmax described in class. This is completely optional as we will always make sure to give you nice values when grading.
+```
+python3 gpt149.py part2 --inference -m shakes128
+```
 
-### What to submit
-* Implement `myUnfusedAttentionBlocked` in `module.cpp`.
+请注意，在推理过程中不会自动评分，这纯粹是为了好玩。请注意，由于溢出错误，模型`shakes1024`和`shakes2048`将无法与我们在本文中描述的 softmax 一起使用。如果你希望它们正常工作，你必须实现课堂上描述的“安全” softmax。这完全是可选的，因为我们在评分时总是确保给你合理的值。
 
-* Then, answer the following questions in your writeup:
-  * Share us some data about what tile sizes you tried when N=1024, and what the performance times were for each.  What was the optimal tile size for your matrix multiplications? Explain why you think this tile size worked best for your implementation. There really isn't a wrong answer here, we just want to see that you experimented and tried to form conclusions.
-  * For a matrix multiply of $Q$ (Nxd) and $K^{T}$ (dxN), what is the ratio of DRAM accesses in Part 2 versus DRAM acceses in Part 1? (assume 4 byte float primitives, 64 byte cache lines, as well as N and d are very large).
+### 提交内容
 
-## Part 3: Fused Attention (25 Points)
-By now we've seen that multiplying $Q * K^{T}$ results in a massive NxN matrix. Doing the matrix multiplies and softmax in seperate functions requies that we write each row of our NxN matrix, and then do another pass over this NxN matrix in the subsequent softmax, and then do a third pass over the softmax'd matrix when multipling it by V. Not only is this bad for cache performance, but it is very bad for our program's memory footprint. 
+- 在`module.cpp`中实现`myUnfusedAttentionBlocked`。
 
-Fortunately, we can resolve both issues by "fusing" the calculation, such that we only require one Nx1 temporary vector instead of an NxN temporary matrix.
+- 然后，在你的报告中回答以下问题：
+	- 分享一些当 N=1024 时你尝试的块大小的数据，以及每个块大小的性能时间。矩阵乘法的最佳块大小是什么？解释你为什么认为这个块大小最适合你的实现。这里没有错误的答案，我们只是想看到你进行了实验并尝试得出结论。
+	- 对于 $Q$ (Nxd) 和 $K^{T}$ (dxN) 的矩阵乘法，第 2 部分中的 DRAM 访问与 第 1 部分中的 DRAM 访问的比率是多少？（假设 4 字节浮点基元，64 字节缓存行，以及 N 和 d 非常大）。
 
-You can do this by observing the following fact. Once we've calculated a single row of the $Q * K^t$ NxN matrix, we are actually ready to softmax that entire row, and we don't have to calculate the rest of the NxN matrix to do so.
+## 第 3 部分：融合注意力机制（25分）
 
-Once that row is softmax'd, we can then immediately multiply the softmax'd row by V to fully compute the first row of our attention output (which is of reasonable size: Nxd). In other words, we can calculate just one row of $Q * K^{t}$, softmax it, then multiply that softmax's row by V. Doing this does not require creating the NxN matrix...it requires creating only one Nx1 size intermediate vector to hold the first row of $Q*K^{t}$ and then its softmax. We can then re-use this same Nx1 array to calculate the 2nd row of attention, and then the third, etc. This means that we never materialize the NxN matrix, which is great because that matrix is never used again later in the network anyways. 
+到目前为止，我们已经看到 $Q * K^{T}$ 产生了一个巨大的 NxN 矩阵。在不同的函数中执行矩阵乘法和 softmax 需要我们写入 NxN 矩阵的每一行，然后在随后的 softmax 中再次遍历这个 NxN 矩阵，然后在与 V 相乘时第三次遍历 softmax 后的矩阵。这不仅对缓存性能不好，而且对程序的内存占用也非常不利。
 
-### Parallelizing with OpenMP
-As you may notice, now that we have fused our matrix multiplications and softmax, we made a significant portion of the computation embarrassingly parallel. For example, we are able to independently compute batches, heads, and rows of our output matrix. This is a perfect opportunity for multi-threading! This time we will be using OpenMP, so you don't have to implement your own threadpools. The OpenMP syntax is relatively simple. If you want to parallelize an section of code, it would look like the following:
+幸运的是，我们可以通过“融合”计算来解决这两个问题，这样我们只需要一个 Nx1 的临时向量，而不是 NxN 的临时矩阵。
 
-    #pragma omp parallel for collapse()
-    
-    -- code is here --
+你可以通过观察以下事实来做到这一点。一旦我们计算了 $Q * K^t$ NxN 矩阵的一行，我们实际上就可以对整行进行 softmax，而不必计算 NxN 矩阵的其余部分。
 
-You will find `#pragma omp parallel for collapse()` useful if you find loops directly nested on top of one another and want to parallelize them. For example, for a triple perfectly nested loop:
+一旦该行进行了 softmax 处理，我们就可以立即将经过 softmax 处理后的行乘以 V，以完全计算我们的注意力输出的第一行（这是一个合理的大小：Nxd）。换句话说，我们可以计算 $Q * K^{t}$ 的一行后，对其进行 softmax，然后将 softmax 后的行乘以V。这样做不需要创建 NxN 矩阵……只需要创建一个 Nx1 大小的中间向量来保存$Q*K^{t}$ 的第一行及其 softmax。然后我们可以重新使用这个 Nx1 数组来计算第二行注意力，接着是第三行，依此类推。这意味着我们从未实际生成 NxN 矩阵，这很好，因为该矩阵在网络的后续计算中也从未被再次使用。
 
-    #pragma omp parallel for collapse(3)
+### 使用 OpenMP 进行并行化
 
-    for ()
+你可能注意到，随着我们融合了矩阵乘法和 softmax，我们使计算的很大一部分变得非常容易并行化。例如，我们可以独立计算输出矩阵的 Batch、Head 和行。这是一个多线程的绝佳机会！这次我们将使用 OpenMP，因此你不必实现自己的线程池。OpenMP 语法相对简单。如果你想并行化一段代码，它看起来像下面这样：
+
+```
+#pragma omp parallel for collapse()
+
+-- code is here --
+```
+
+如果你发现循环直接嵌套在另一个循环之上并希望并行化它们，你会发现 `#pragma omp parallel for collapse()` 非常有用。例如，对于一个完美嵌套的三重循环：
+
+```
+#pragma omp parallel for collapse(3)
+
+for ()
+
+    for()
 
         for()
-    
-            for()
+```
 
-Note: You'd usually want to be careful when writing to a single Nx1 temporary row when using OpenMP, as this is a race condition. To work around this, we give you a skeleton of the first three loops (you will need more loops) in which each OpenMP thread gets assigned its own copy of the Nx1 temporary array, in a way that avoids race conditions. This local copy of the array is a slice/subset of the temporary memory we allocate for you, and pass into the function (`myFusedAttention`) as an argument. Keep in mind that any variables declared inside the loop(s) you are trying to parallelize will be private to each thread.
+注意：在使用 OpenMP 时，写入一个 Nx1 的临时行，通常需要小心，因为这会引发竞争。为了解决这个问题，我们为你提供了前三个循环的框架（你将需要更多的循环），其中每个 OpenMP 线程都被分配了自己的 Nx1 临时数组的副本，以避免竞争。这个局部副本的数组是我们为你分配的临时内存的一部分，并作为参数传递给函数（`myFusedAttention`）。请记住，在你尝试并行化的循环内声明的任何变量都将是每个线程私有的。
 
-### Testing:
-Run the following test to check your program's correctness:
+### 测试：
 
-    python3 gpt149.py part3
+运行以下测试以检查你的程序的正确性：
 
-A correct implementation should yield the following output:
+```
+python3 gpt149.py part3
+```
 
-    REFERENCE - FUSED ATTENTION statistics
-    cpu time:  32.361ms
-    mem usage:  557052 bytes
+正确的实现应产生以下输出：
 
-    STUDENT - FUSED ATTENTION statistics
-    cpu time:  33.209ms
-    mem usage:  557052 bytes
+```
+REFERENCE - FUSED ATTENTION statistics
+cpu time:  32.361ms
+mem usage:  557052 bytes
 
-An incorrect implementation will have the output:
+STUDENT - FUSED ATTENTION statistics
+cpu time:  33.209ms
+mem usage:  557052 bytes
+```
 
-    YOUR ATTENTION PRODUCED INCORRECT RESULTS
+不正确的实现将产生以下输出：
 
-Just as in Parts 1 & 2, we will autograde the correctness of your function's output and its CPU time. You have the same buffer of <=15ms of the reference solution. If your program is faster you will not be penalized.
+```
+YOUR ATTENTION PRODUCED INCORRECT RESULTS
+```
 
-You should be sure to test that your function works for different values of N, as this is how we will be grading you on correctness. We have provided a command line argument that works as so:
+和第 1 和第 2 部分一样，我们将自动评估函数输出的正确性及其 CPU 时间。你同样有与参考解法相比的 <=15ms 缓冲时间。如果你的程序更快，你不会受到惩罚。
 
-    python3 gpt149.py part3 -N <val>
+你应该确保你的函数在不同的 N 值下工作正常，因为这将是我们评估你正确性的方式。我们提供了一个命令行参数：
 
-Now, you can see the DNN use your attention layer to generate text, optionally changing the model to `shakes256`, `shakes1024`, or `shakes2048` if you wish to output more text:
+```
+python3 gpt149.py part3 -N <val>
+```
 
-    python3 gpt149.py part3 --inference -m shakes128
+现在，你可以看到 DNN 使用你的注意力层生成文本，如果你希望输出更多文本，可以选择将模型更改为`shakes256`、`shakes1024`或`shakes2048`：
 
-Note that you will not be autograded on inference, and this is purely for fun. Please also note that the models `shakes1024` and `shakes2048` will not work with the softmax we describe in this writeup due to overflow errors. If you wish to have them work, you must implement the "safe" softmax described in class. This is completely optional as we will always make sure to give you nice values when grading.
+```
+python3 gpt149.py part3 --inference -m shakes128
+```
 
-### What to submit
-* Implement `myFusedAttention` in `module.cpp`.
+请注意，在推理过程中不会自动评分，这纯粹是为了好玩。请注意，由于溢出错误，模型`shakes1024`和`shakes2048`将无法与我们在本文中描述的 softmax 一起使用。如果你希望它们正常工作，你必须实现课堂上描述的“安全” softmax。这完全是可选的，因为我们在评分时总是确保给你合理的值。
 
-* Then, answer the following question in your writeup:
-  * Why do we use a drastically smaller amount of memory in Part 3 when compared to Parts 1 & 2?
-  * Comment out your `#pragma omp ...` statement, what happens to your cpu time? Record the cpu time in your writeup. Why does fused attention make it easier for us utilize multithreading to a much fuller extent when compared to Part 1?
+### 提交内容
 
-## Part 4 : Putting it all Together - Flash Attention (35 Points)
-### Why Are Matrix Multiply and Softmax Hard to Fuse as Blocks?
-The attention formula is very awkward to fuse for a couple reasons. Notice how the formula consists of a matrix multiply, followed by a row-wise calculation from softmax, and concluded with another matrix multiplication. The true thing that makes it difficult from fusing these three operations as blocks is the fact that softmax has to operate on the entire row. So, if we want to bypass this dependency we really have to think outside the box. That is where Flash Attention comes in.
+- 在`module.cpp`中实现`myFusedAttention`。
 
-### Breaking Softmax into Blocks
-Let's say that we have a BLOCKSIZE vector, we will denote it as $x \in \mathbb{R}^{B}$.The softmax of $x$ can be formulated as:
+- 然后，在你的报告中回答以下问题：
+	- 为什么与第 1 和第 2 部分相比，我们在第 3 部分使用的内存量少得多？
+	- 注释掉你的`#pragma omp ...`语句，你的 CPU 时间会发生什么变化？在你的报告中记录 CPU 时间。为什么与第 1 部分相比，融合注意力使我们更容易充分利用多线程？
 
-<p align="center">
-  <img src="https://github.com/stanford-cs149/cs149gpt/blob/main/assets/Softmax_decomp1.png" width=55% height=55%>
-</p>
+## 第 4 部分：整合——Flash Attention（35分）
 
-It follows that if we have two BLOCKSIZE vectors, denoted as $x \in \mathbb{R}^{B}$ and $y \in \mathbb{R}^{B}$, then we can decompose $softmax([x\ y]$ as:
+### 为什么矩阵乘法和 Softmax 难以作为块进行融合？
 
-<p align="center">
-  <img src="https://github.com/stanford-cs149/cs149gpt/blob/main/assets/Softmax_decomp2.png" width=55% height=55%>
-</p>
+注意力公式由于几个原因而难以融合。注意到公式由一个矩阵乘法组成，接着是来自 softmax 的逐行计算，最后是另一个矩阵乘法。真正使得将这三种操作作为块融合变得困难的是 softmax 必须对整行进行操作。所以，如果我们想绕过这种依赖性，我们真的需要跳出思维框架。这就是 Flash Attention 的作用所在。
 
+### 将 Softmax 分解成块
 
-### Implement Flash Attention
-Your job is to break softmax into blocks so it can be fused with your blocked matrix multiply. Therefore, for each block, you will multiply $Q$ (BLOCKROWSIZE x d) with $K^{t}$ (d x BLOCKCOLUMNSIZE) to get $QK^t$ (BLOCKROWSIZE x BLOCKCOLUMNSIZE). Then, you will calculate $\texttt{softmax}(QK^t)$ (BLOCKROWSIZE x BLOCKCOLUMNSIZE) and multiply this with $V$ (BLOCKCOLUMNSIZE x d) to get $O$ (BLOCKROWSIZE x d). Remember, this is an accumulative process just like blocked matrix multiply!
-
-By doing this we can significantly decrease the memory footprint. Rather than having a memory footprint of $O(N^{2})$, we will be able to reduce this to a linear scaling footprint of $O(N)$.
-
-### Flash Attention Pseudocode
-
-The flash attention algorithm shown below, imports blocks of the matrices $Q$, $K$, and $V$ into smaller physical tiles. It then computes a local softmax in each tile, and then writes this result tile back to the full output matrix $O$. For $Q$, for example, each tile's size is (Br x d), and the tile size for $K$ is (Bc x d). Calculating $Br$ and $Bc$, as shown in the pseudocode below, requires knowing the size $M$ of your SRAM/cache, which in this case is $M=131072$ floats. For the purposes of this programming assignment, your program should be able to handle any $Br/Bc$ we give it.
+假设我们有一个大小为 BLOCKSIZE 的向量，我们将其表示为 $x \in \mathbb{R}^{B}$。 $x$ 的 softmax 可以表示为：
 
 <p align="center">
-  <img src="https://github.com/stanford-cs149/cs149gpt/blob/main/assets/FlashAttentionPseudo.png" width=65% height=65%>
+  <img src="./assets/Softmax_decomp1.png" width=55% height=55%>
 </p>
 
-### Testing:
-Run the following test to check your program's correctness:
+由此可见，如果我们有两个大小为 BLOCKSIZE 的向量，分别表示为 $x \in \mathbb{R}^{B}$ 和 $y \in \mathbb{R}^{B}$，那么我们可以将 $softmax([x\ y])$ 分解为：
 
-    python3 gpt149.py part4
+<p align="center">
+  <img src="./assets/Softmax_decomp2.png" width=55% height=55%>
+</p>
 
-**Make sure to test your implementation on different block sizes.** When running this test, the default values of $N$ and $d$ are $1024$ and $32$ respectively. Make sure that your program is able to handle any block size, whether your block size evenly divides into these values of $N/d$ or not. We have given you commandline flags to change the $Br$ and $Bc$ parameters of the attention algorithm. You can do this with the flags `-br <value>` and `-bc <value>`. The default values for each are $256$. For example, if I wanted to change $Br$ to $128$ and $Bc$ to $512$ I would run:
+### 实现 Flash Attention
 
-    python3 gpt149.py part4 -br 128 -bc 512
+你的任务是将 softmax 分解成块，以便与块矩阵乘法融合。因此，对于每个块，你将 $Q$ (BLOCKROWSIZE x d) 与 $K^{t}$ (d x BLOCKCOLUMNSIZE) 相乘，得到 $QK^t$ (BLOCKROWSIZE x BLOCKCOLUMNSIZE)。然后计算 $\texttt{softmax}(QK^t)$ (BLOCKROWSIZE x BLOCKCOLUMNSIZE) 并将其与 $V$ (BLOCKCOLUMNSIZE x d) 相乘，得到 $O$ (BLOCKROWSIZE x d)。记住，这是一种累积过程，就像块矩阵乘法一样！
 
-A correct implementation should yield the following output:
+通过这样做，我们可显著减少内存占用。 我们将能够将其减少到 $O(N)$ 线性缩放的内存占用，而非 $O(N^{2})$ 的内存占用。
 
-    REFERENCE - FLASH ATTENTION statistics
-    cpu time:  435.709ms
-    mem usage:  524284 bytes
+### Flash Attention 伪代码
 
-    STUDENT - FLASH ATTENTION statistics
-    cpu time:  435.937ms
-    mem usage:  524284 bytes
+下面显示的 Flash Attention 算法，将矩阵 $Q$、$K$ 和 $V$ 的块导入到较小的物理块中。然后在每个块中计算局部 softmax，并将此结果块写回到完整的输出矩阵 $O$ 中。例如，对于 $Q$，每个块的大小为 (Br x d)，而 $K$ 的块大小为 (Bc x d)。计算 Br 和 Bc（如下伪代码所示）需要知道你的 SRAM/cache 的大小 $M$，在本例中，$M=131072$ 个浮点数。对于此编程作业，你的程序应能够处理我们给定的任何 Br/Bc。
 
-An incorrect implementation will have the output:
+<p align="center">
+  <img src="./assets/FlashAttentionPseudo.png" width=65% height=65%>
+</p>
 
-    YOUR ATTENTION PRODUCED INCORRECT RESULTS
+### 测试：
 
-Notice that the cpu speed is actually lower than Part 3. Why is this the case? You will answer this question in your writeup below.
+运行以下测试以检查你的程序的正确性：
 
-You should be sure to test that your function works for different values of N, as this is how we will be grading you on correctness. You should test different Ns as well as different block_sizes. Please note that the reference solution runs first, so if the reference solution fails then you do not have to worry about that combination of N/Br/Bc. To change the values of N, Br, and Bc:
+```
+python3 gpt149.py part4
+```
 
-    python3 gpt149.py part4 -N <val> -br <val> -bc <val>
+**确保在不同的块大小上测试你的实现。** 运行此测试时，$N$ 和 $d$ 的默认值分别为 $1024$ 和 $32$。确保你的程序能够处理任意块大小，无论你的块大小是否能整除这些 $N/d$ 值。我们为你提供了命令行标志来更改注意力算法的 $Br$ 和 $Bc$ 参数。你可以使用 `-br <value>` 和 `-bc <value>` 标志来进行更改。每个的默认值为 $256$。例如，如果想将 $Br$ 更改为 $128$ 并将 $Bc$ 更改为 $512$，运行：
 
-**For this problem only**, you will be graded solely on correctness and not performance. The grading consists on an automated check that your algorithm produced the correct output and a manual check that you followed the pseudocode from above. If you ran the command `python3 gpt149.py part4` and you saw the output above that is associated with a correct implementation and DID NOT see: `YOUR ATTENTION PRODUCED INCORRECT RESULTS`, then you passed the autograded portion. For the correctness check, we also reserve the right to change the values of N, Br, and Bc. If you followed the pseudocode from the image above, then you will pass the manual check.
+```
+python3 gpt149.py part4 -br 128 -bc 512
+```
 
-Now, you can see the DNN use your attention layer to generate text, optionally changing the model to `shakes256`, `shakes1024`, or `shakes2048` if you wish to output more text:
+正确的实现应产生以下输出：
 
-    python3 gpt149.py part4 --inference -m shakes128
+```
+REFERENCE - FLASH ATTENTION statistics
+cpu time:  435.709ms
+mem usage:  524284 bytes
 
-Note that you will not be autograded on inference, and this is purely for fun. Please also note that the models `shakes1024` and `shakes2048` will not work with the softmax we describe in this writeup due to overflow errors. If you wish to have them work, you must implement the "safe" softmax described in class. This is completely optional as we will always make sure to give you nice values when grading.
+STUDENT - FLASH ATTENTION statistics
+cpu time:  435.937ms
+mem usage:  524284 bytes
+```
 
-### What to submit
-* Implement `myFlashAttention` in `module.cpp`. 
+不正确的实现将产生以下输出：
 
-* Then, answer the following question in your writeup:
-  * How does the memory usage of Part 4 compare to that of the previous parts? Why is this the case?
-  * Notice that the performance of Part 4 is slower than that of the previous parts. Have we fully optimized Part 4? What other performance improvements can be done? Please list them and describe why they would increase performance.
+```
+YOUR ATTENTION PRODUCED INCORRECT RESULTS
+```
 
-## Extra Credit: Optimize Further (12 Total Points - 3 Points Per Part)
+请注意，CPU 速度实际上比第 3 部分低。为什么会这样？在报告中回答这个问题。
 
-### Vectorize with ISPC Intrinsics
-You may notice that there are many looped-based nondivergent floating point operations. This is a great place to use vector intrinsics! We have provided ISPC support for you to write you own vectorized functions for things such as matrix multiplication and row sum. The repo contains a file titled `module.ispc`. Feel free to write your own ISPC functions in here, and compile them with the command:
+你应该确保你的函数在不同的 N 值下工作正常，因为这将是我们评估你正确性的方式。你应该测试不同的 N 值以及不同的块大小。请注意，参考解法会先运行，所以如果参考解法失败，那么你不必担心该 N/Br/Bc 组合。 要更改 N、Br 和 Bc 的值，请使用以下命令行参数：
 
-     ispc -O3 --target=avx2-i32x8 --arch=x86-64 --pic module.ispc -h module_ispc.h -o module_ispc.o 
-     
-To enable them in your `module.cpp` file, all you need to simply uncomment the following two lines at the top of the file:
+```
+python3 gpt149.py part4 -N <val> -br <val> -bc <val>
+```
 
-    #include "module_ispc.h"
-    using namespace ispc;
+你可以看到 DNN 使用你的注意力层生成文本，如果你希望输出更多文本，可以选择将模型更改为`shakes256`、`shakes1024`或`shakes2048`：
 
-### Write-Up Question
-* Please record your speedups with vectorization and your implementations in `writeup.pdf.`
+```
+python3 gpt149.py part4 --inference -m shakes128
+```
 
-## Point BreakDown: (100 Total Points + 12 Possible Extra Credit)
-* Implement `fourDimRead`: 1.5 Points
-* Implement `fourDimWrite`: 1.5 Points
-* Implement `myNaiveAttention`: 10 Points
-* Implement `myUnfusedAttentionBlocked`: 20 Points
-* Implement `myFusedAttention`: 25 Points
-* Implement `myFlashAttention`: 35 Points
-* Answer Writeup Questions: 7 Points
-  * 1 Warm-Up Question
-  * 2 Part 2 Questions
-  * 2 Part 3 Questions
-  * 2 Part 4 Questions
-* Extra Credit: Vectorize Parts 1-4: 3 Points Per Part
+请注意，在推理过程中不会自动评分，这纯粹是为了好玩。请注意，由于溢出错误，模型`shakes1024`和`shakes2048`将无法与我们在本文中描述的 softmax 一起使用。如果你希望它们正常工作，你必须实现课堂上描述的“安全” softmax。这完全是可选的，因为我们在评分时总是确保给你合理的值。
 
-## Hand-in Instructions
-Please submit your work using [Gradescope](https://www.gradescope.com/). If you are working with a partner please remember to tag your partner on gradescope.
+### 提交内容
 
-Please submit your writeup questions in a file `writeup.pdf`. REMEMBER to map the pages to questions on gradescope. If you did the extra credit, please state so at the end of your writeup as we will manually run these. In addition, please record the performance numbers we should expect for each part that you sped up using vectorization.
+- 在`module.cpp`中实现`myFlashAttention`。
 
-* Please submit the following files to Assignment 4 (Code):
-  * module.cpp
-  * module.ispc (if you attempted the extra credit)
-    
-* Please submit your writeup in a file called `writeup.pdf` to Assignment 4 (Write-Up).
+- 然后，在报告中回答以下问题：
+	- 第 4 部分的内存使用情况与之前各部分相比如何？为什么会这样？
+	- 注意第 4 部分的性能比之前各部分要慢。我们是否完全优化了第 4 部分？还可以进行哪些性能改进？请列出它们并描述为什么它们会提高性能。
+
+## 额外加分：进一步优化（总计12分 - 每部分3分）
+
+### 使用 ISPC 内置函数进行向量化
+
+你可能注意到有许多基于循环的无分支浮点操作。这是使用向量内置函数的绝佳机会！我们为你提供了 ISPC 支持，以编写自己的向量化函数，例如矩阵乘法和行求和。代码库中包含一个名为`module.ispc`的文件。你可以在这里自由编写自己的 ISPC 函数，并使用以下命令编译它们：
+
+```
+ispc -O3 --target=avx2-i32x8 --arch=x86-64 --pic module.ispc -h module_ispc.h -o module_ispc.o 
+```
+
+要在你的`module.cpp`文件中启用它们，只需取消文件顶部的以下两行注释：
+
+```
+#include "module_ispc.h"
+using namespace ispc;
+```
+
+### 报告问题
+
+- 请在`writeup.pdf`中记录向量化后的加速效果和你的实现。
+
+## 分数分配：（总计100分 + 12分额外加分）
+
+- 实现`fourDimRead`：1.5分
+- 实现`fourDimWrite`：1.5分
+- 实现`myNaiveAttention`：10分
+- 实现`myUnfusedAttentionBlocked`：20分
+- 实现`myFusedAttention`：25分
+- 实现`myFlashAttention`：35分
+- 回答报告问题：7分
+	- 1 个热身问题
+	- 2 个第 2 部分问题
+	- 2 个第 3 部分问题
+	- 2 个第 4 部分问题
+- 额外加分：对第 1-4 部分进行向量化：每部分 3 分
+
+## 提交说明
+
+请使用 [Gradescope](https://www.gradescope.com/) 提交你的作业。如果你与合作伙伴一起完成，请记得在 Gradescope 上标记你的合作伙伴。
+
+请将你的报告问题的回答放在一个名 `writeup.pdf`的文件中。记住在 Gradescope 上将页面映射到问题。如果你完成了额外加分，请在报告的结尾注明，因为我们将手动运行这些部分。此外，请记录使用向量化加速的每部分预期性能数据。
+
+- 请将以下文件提交到 Assignment 4 (Code)：
+	- module.cpp
+	- module.ispc（如果你尝试了额外加分）
+- 请将你的报告文件`writeup.pdf`提交到 Assignment 4 (Write-Up)。
